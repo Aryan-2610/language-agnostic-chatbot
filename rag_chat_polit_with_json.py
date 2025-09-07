@@ -28,18 +28,26 @@ from langchain.prompts import ChatPromptTemplate
 # System-level instructions (enforced every turn)
 SYSTEM_PROMPT = """
 You are a campus administration assistant.
-You speak in a clear, professional, and authoritative tone,
-as if you are part of the administration office.
+Respond in a clear, professional, and polite tone,
+as if you are a staff member helping students.
+
+Your response MUST always be in valid JSON with the following keys:
+- intent: one of ["greeting", "ending", "query", "inap_language"]
+- fallback: a float between 0.0 and 1.0 (higher if you are unsure or if query needs admin)
+- msg: your actual assistant reply (string, natural language)
+- doc: the main source PDF filename if used, else null
+- page: the page number if available, else null
 
 Guidelines:
-- Answer directly, as though you already know the policies.
-- Never use phrases like "based on the context", "based on the information",
-  "according to the documents", or any similar wording.
-- Do not mention reference materials or sources explicitly.
-- Formatting rule:
-  * Only use **bold** for dates (e.g., **12th March 2025**) and money amounts
-    (e.g., **₹5000**, **$100**). No other formatting.
+- For greetings (hi, hello), intent = "greeting"
+- For goodbyes (bye), intent = "ending"
+- For abusive or inappropriate queries, intent = "inap_language"
+- Otherwise, intent = "query"
+- fallback ≥ 0.7 if you cannot answer confidently (so ticket can be raised)
+- msg should sound like you already know the policy, never mention "context" or "documents".
+- doc/page should be filled ONLY if you used context from a PDF.
 """
+
 
 # Create reusable prompt template
 prompt_template = ChatPromptTemplate.from_messages([
@@ -134,70 +142,69 @@ def chat(query):
 
     # Handle small talk
     if query.lower().strip() in SMALL_TALK:
-        response = SMALL_TALK[query.lower().strip()]
-        conversation_history.append(("user", query))
-        conversation_history.append(("assistant", response))
-        return response
+        return {
+            "intent": "greeting" if "hi" in query.lower() or "hello" in query.lower() else "ending",
+            "fallback": 0.0,
+            "msg": SMALL_TALK[query.lower().strip()],
+            "doc": None,
+            "page": None
+        }
 
     # Retrieve context
     results = retrieve_context(query)
     docs = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0] if results.get("metadatas") else []
 
-    # Build conversation history text
+    # Extract source + page safely
+    doc_name = None
+    page_num = None
+    if isinstance(metadatas, dict):   # case: single dict
+        doc_name = metadatas.get("source")
+        page_num = metadatas.get("page")
+    elif isinstance(metadatas, list) and metadatas:  # case: list of dicts
+        doc_name = metadatas[0].get("source")
+        page_num = metadatas[0].get("page")
+
+    context = "\n".join(docs) if docs else ""
+
+    # Build conversation history
     history_text = ""
-    for role, msg in conversation_history[-6:]:  # last 3 exchanges
+    for role, msg in conversation_history[-6:]:
         history_text += f"{role.capitalize()}: {msg}\n"
 
-    if docs:
-        context = "\n".join(docs)
-        prompt = f"""
-        You are a campus administration assistant.
-        Answer queries in a clear, professional, and authoritative tone,
-        as if you are part of the administration.
-
-        Here is some reference material you may use:
-        {context}
-
-        Important rules:
-        - Do NOT say phrases like "based on the context", "according to the information", 
-          "from the documents", or anything similar.
-        - Just answer directly, as if you already know the policy.
-        - Formatting rule: Only use **bold** for dates (e.g., **12th March 2025**) 
-          and money amounts (e.g., **₹5000**, **$100**). No other formatting.
-
-        Conversation so far:
-        {history_text}
-
-        User: {query}
-        Assistant:
-        """
-    else:
-        prompt = f"""
-        You are a campus administration assistant.
-        Answer queries in a clear, professional, and authoritative tone,
-        as if you are part of the administration.
-
-        Important rules:
-        - Do NOT say phrases like "based on the context", "according to the information", 
-          or "from the documents".
-        - Just answer directly, as if you already know the policy.
-        - Formatting rule: Only use **bold** for dates (e.g., **12th March 2025**) 
-          and money amounts (e.g., **₹5000**, **$100**). No other formatting.
-
-        Conversation so far:
-        {history_text}
-
-        User: {query}
-        Assistant:
-        """
+    # JSON-enforcing prompt
+    prompt = prompt_template.format(
+        history=history_text + ("\n" + context if context else ""),
+        query=query
+    )
 
     response = llm.invoke(prompt).content
 
+    # Ensure valid JSON (sometimes LLM may add extra text)
+    import json
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        data = {
+            "intent": "query",
+            "fallback": 1.0,
+            "msg": "Sorry, I could not process this request correctly.",
+            "doc": None,
+            "page": None
+        }
+
+    # Attach doc + page from retrieval if LLM didn’t include them
+    if not data.get("doc") and doc_name:
+        data["doc"] = doc_name
+    if not data.get("page") and page_num:
+        data["page"] = page_num
+
     # Update history
     conversation_history.append(("user", query))
-    conversation_history.append(("assistant", response))
+    conversation_history.append(("assistant", data["msg"]))
 
-    return response
+    return data
+
 
 if __name__ == "__main__":
     while True:

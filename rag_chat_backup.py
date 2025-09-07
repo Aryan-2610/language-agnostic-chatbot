@@ -20,34 +20,6 @@ SMALL_TALK = {
     "hello": "Hi there 👋 How can I assist?",
     "bye": "Goodbye! Have a great day 🎓",
 }
-# Store conversation history
-conversation_history = []
-
-from langchain.prompts import ChatPromptTemplate
-
-# System-level instructions (enforced every turn)
-SYSTEM_PROMPT = """
-You are a campus administration assistant.
-You speak in a clear, professional, and authoritative tone,
-as if you are part of the administration office.
-
-Guidelines:
-- Answer directly, as though you already know the policies.
-- Never use phrases like "based on the context", "based on the information",
-  "according to the documents", or any similar wording.
-- Do not mention reference materials or sources explicitly.
-- Formatting rule:
-  * Only use **bold** for dates (e.g., **12th March 2025**) and money amounts
-    (e.g., **₹5000**, **$100**). No other formatting.
-"""
-
-# Create reusable prompt template
-prompt_template = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("human", "{history}\nUser: {query}\nAssistant:")
-])
-
-
 
 # Search query in DB
 def retrieve_context(query, k=3):
@@ -57,38 +29,31 @@ def retrieve_context(query, k=3):
     return results
 
 def chat(query):
-    global conversation_history
-
     # Handle small talk
     if query.lower().strip() in SMALL_TALK:
-        response = SMALL_TALK[query.lower().strip()]
-        conversation_history.append(("user", query))
-        conversation_history.append(("assistant", response))
-        return response
+        return SMALL_TALK[query.lower().strip()]
 
     # Retrieve context
     results = retrieve_context(query)
     docs = results.get("documents", [[]])[0]
-    context = "\n".join(docs) if docs else ""
 
-    # Build conversation history text
-    history_text = ""
-    for role, msg in conversation_history[-6:]:
-        history_text += f"{role.capitalize()}: {msg}\n"
+    if not docs:  # No relevant docs
+        return llm.invoke(query).content
 
-    # Fill in template
-    formatted_prompt = prompt_template.format(
-        history=history_text + ("\n" + context if context else ""),
-        query=query
-    )
+    context = "\n".join(docs)
+    prompt = f"""
+    You are a helpful campus assistant.
+    Use the context below to answer the question.
+    If the context is not relevant, answer normally.
 
-    response = llm.invoke(formatted_prompt).content
+    Context:
+    {context}
 
-    # Update history
-    conversation_history.append(("user", query))
-    conversation_history.append(("assistant", response))
+    Question: {query}
+    """
 
-    return response
+    response = llm.invoke(prompt)
+    return response.content
 
 if __name__ == "__main__":
     while True:
@@ -145,25 +110,18 @@ def chat(query):
 
     # Build conversation history text
     history_text = ""
-    for role, msg in conversation_history[-6:]:  # last 3 exchanges
+    for role, msg in conversation_history[-6:]:  # keep last 3 exchanges
         history_text += f"{role.capitalize()}: {msg}\n"
 
     if docs:
         context = "\n".join(docs)
         prompt = f"""
-        You are a campus administration assistant.
-        Answer queries in a clear, professional, and authoritative tone,
-        as if you are part of the administration.
+        You are a helpful campus assistant.
+        Use the context below to answer the question.
+        If the context is not relevant, answer normally.
 
-        Here is some reference material you may use:
+        Context:
         {context}
-
-        Important rules:
-        - Do NOT say phrases like "based on the context", "according to the information", 
-          "from the documents", or anything similar.
-        - Just answer directly, as if you already know the policy.
-        - Formatting rule: Only use **bold** for dates (e.g., **12th March 2025**) 
-          and money amounts (e.g., **₹5000**, **$100**). No other formatting.
 
         Conversation so far:
         {history_text}
@@ -173,16 +131,7 @@ def chat(query):
         """
     else:
         prompt = f"""
-        You are a campus administration assistant.
-        Answer queries in a clear, professional, and authoritative tone,
-        as if you are part of the administration.
-
-        Important rules:
-        - Do NOT say phrases like "based on the context", "according to the information", 
-          or "from the documents".
-        - Just answer directly, as if you already know the policy.
-        - Formatting rule: Only use **bold** for dates (e.g., **12th March 2025**) 
-          and money amounts (e.g., **₹5000**, **$100**). No other formatting.
+        You are a helpful campus assistant.
 
         Conversation so far:
         {history_text}

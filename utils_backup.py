@@ -23,23 +23,8 @@ def extract_text_with_ocr(file_path):
     return text.strip()
 
 # Fallback function (try normal, else OCR)
-from pdf2image import convert_from_path
-import pytesseract
-from PyPDF2 import PdfReader
-
-def extract_text(pdf_path):
-    try:
-        # Try normal text extraction
-        reader = PdfReader(pdf_path)
-        texts = []
-        for page in reader.pages:
-            texts.append(page.extract_text() or "")
-        return texts
-    except Exception:
-        # If fails, fallback to OCR
-        images = convert_from_path(pdf_path)
-        texts = []
-        for img in images:
-            text = pytesseract.image_to_string(img)
-            texts.append(text)
-        return texts
+def extract_text(file_path):
+    text = extract_text_from_pdf(file_path)
+    if not text:  # If empty, use OCR
+        text = extract_text_with_ocr(file_path)
+    return text
